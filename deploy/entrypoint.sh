@@ -16,11 +16,16 @@ export SECRET_KEY="${SECRET_KEY:-changeme-in-production}"
 export MINIO_ROOT_USER="${MINIO_ROOT_USER:-minioadmin}"
 export MINIO_ROOT_PASSWORD="${MINIO_ROOT_PASSWORD:-minioadmin123}"
 
+# Always ensure the data directory exists with correct ownership/permissions.
+# Docker volumes can be created as root, which causes postgres to refuse to start.
+mkdir -p /var/lib/postgresql/data
+chown postgres:postgres /var/lib/postgresql/data
+chmod 700 /var/lib/postgresql/data
+
 # PostgreSQL init — PG_VERSION is created by initdb inside the data volume,
 # so this check survives container restarts correctly
 if [ ! -f "/var/lib/postgresql/data/PG_VERSION" ]; then
     echo "[gunpladb] Initializing PostgreSQL..."
-    mkdir -p /var/lib/postgresql/data
     chown -R postgres:postgres /var/lib/postgresql/data
     gosu postgres "$PG_BIN/initdb" -D /var/lib/postgresql/data
 
