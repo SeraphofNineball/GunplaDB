@@ -16,12 +16,10 @@ export SECRET_KEY="${SECRET_KEY:-changeme-in-production}"
 export MINIO_ROOT_USER="${MINIO_ROOT_USER:-minioadmin}"
 export MINIO_ROOT_PASSWORD="${MINIO_ROOT_PASSWORD:-minioadmin123}"
 
-INIT_FLAG=/var/lib/postgresql/.gunpladb_initialized
-
-if [ ! -f "$INIT_FLAG" ]; then
-    echo "[gunpladb] First run — initializing services..."
-
-    # PostgreSQL
+# PostgreSQL init — PG_VERSION is created by initdb inside the data volume,
+# so this check survives container restarts correctly
+if [ ! -f "/var/lib/postgresql/data/PG_VERSION" ]; then
+    echo "[gunpladb] Initializing PostgreSQL..."
     mkdir -p /var/lib/postgresql/data
     chown -R postgres:postgres /var/lib/postgresql/data
     gosu postgres "$PG_BIN/initdb" -D /var/lib/postgresql/data
@@ -30,9 +28,13 @@ if [ ! -f "$INIT_FLAG" ]; then
     gosu postgres psql -c "CREATE USER ${POSTGRES_USER:-gunpla} WITH PASSWORD '${POSTGRES_PASSWORD:-gunplapass}';"
     gosu postgres psql -c "CREATE DATABASE gunpladb OWNER ${POSTGRES_USER:-gunpla};"
     gosu postgres "$PG_BIN/pg_ctl" stop -D /var/lib/postgresql/data -w
+    echo "[gunpladb] PostgreSQL initialized."
+fi
 
-    # MinIO bucket
-    mkdir -p /data/minio
+# MinIO bucket init — flag lives inside the minio volume so it survives restarts
+mkdir -p /data/minio
+if [ ! -f "/data/minio/.bucket_initialized" ]; then
+    echo "[gunpladb] Initializing MinIO bucket..."
     MINIO_ROOT_USER="${MINIO_ROOT_USER}" \
     MINIO_ROOT_PASSWORD="${MINIO_ROOT_PASSWORD}" \
     /usr/local/bin/minio server /data/minio &
@@ -52,9 +54,8 @@ if [ ! -f "$INIT_FLAG" ]; then
 
     kill $MINIO_PID
     wait $MINIO_PID 2>/dev/null || true
-
-    touch "$INIT_FLAG"
-    echo "[gunpladb] Initialization complete."
+    touch /data/minio/.bucket_initialized
+    echo "[gunpladb] MinIO bucket initialized."
 fi
 
 mkdir -p /data/redis /var/log/supervisor
