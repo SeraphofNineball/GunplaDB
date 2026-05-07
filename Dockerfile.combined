@@ -1,0 +1,67 @@
+# Stage 1: Build frontend
+FROM node:20-alpine AS frontend-builder
+WORKDIR /app
+COPY frontend/package*.json ./
+RUN npm install
+COPY frontend/ .
+RUN npm run build
+
+# Stage 2: Combined runtime
+FROM python:3.12-slim
+
+# System packages: PostgreSQL, Redis, nginx, supervisor, Playwright Chromium deps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    postgresql \
+    redis-server \
+    nginx \
+    supervisor \
+    curl \
+    gosu \
+    libnss3 \
+    libnspr4 \
+    libdbus-1-3 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libxkbcommon0 \
+    libatspi2.0-0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxrandr2 \
+    libgbm1 \
+    libpango-1.0-0 \
+    libcairo2 \
+    libasound2 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install MinIO server and client (architecture-aware for NAS compatibility)
+ARG TARGETARCH
+RUN curl -fsSL "https://dl.min.io/server/minio/release/linux-${TARGETARCH}/minio" -o /usr/local/bin/minio \
+    && curl -fsSL "https://dl.min.io/client/mc/release/linux-${TARGETARCH}/mc" -o /usr/local/bin/mc \
+    && chmod +x /usr/local/bin/minio /usr/local/bin/mc
+
+# Python dependencies
+WORKDIR /app
+COPY backend/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+RUN playwright install chromium
+
+# Backend application code
+COPY backend/ /app/
+
+# Built frontend static files served directly by nginx
+COPY --from=frontend-builder /app/dist /var/www/gunpladb/
+
+# Configuration files
+COPY deploy/nginx.conf /etc/nginx/sites-available/default
+COPY deploy/supervisord.conf /etc/supervisor/conf.d/gunpladb.conf
+COPY deploy/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+VOLUME ["/var/lib/postgresql/data", "/data/minio", "/data/redis"]
+
+EXPOSE 80 9001
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["/usr/bin/supervisord", "-n", "-c", "/etc/supervisor/supervisord.conf"]
