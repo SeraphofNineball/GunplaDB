@@ -43,9 +43,9 @@ def scrape_all_kits(self, job_id: int, max_kits: Optional[int] = None):
     from app.storage import upload_bytes, get_public_url
     import httpx
 
-    session = _get_sync_session()
-
+    session = None
     try:
+        session = _get_sync_session()
         # Mark job as running
         job = session.get(ScrapeJob, job_id)
         job.status = ScrapeJobStatus.RUNNING
@@ -144,6 +144,8 @@ def scrape_all_kits(self, job_id: int, max_kits: Optional[int] = None):
 
     except Exception as e:
         logger.error(f"Scrape job {job_id} failed: {e}")
+        if session is None:
+            session = _get_sync_session()
         job = session.get(ScrapeJob, job_id)
         if job:
             job.status = ScrapeJobStatus.FAILED
@@ -152,7 +154,8 @@ def scrape_all_kits(self, job_id: int, max_kits: Optional[int] = None):
             session.commit()
         raise
     finally:
-        session.close()
+        if session is not None:
+            session.close()
 
 
 @celery_app.task(bind=True, name="gunpladb.scrape_new_kits")
@@ -163,9 +166,9 @@ def scrape_new_kits(self, job_id: int):
     from app.storage import upload_bytes
     import httpx
 
-    session = _get_sync_session()
-
+    session = None
     try:
+        session = _get_sync_session()
         job = session.get(ScrapeJob, job_id)
         job.status = ScrapeJobStatus.RUNNING
         job.started_at = datetime.now(timezone.utc)
@@ -247,6 +250,8 @@ def scrape_new_kits(self, job_id: int):
 
     except Exception as e:
         logger.error(f"New-kits job {job_id} failed: {e}")
+        if session is None:
+            session = _get_sync_session()
         job = session.get(ScrapeJob, job_id)
         if job:
             job.status = ScrapeJobStatus.FAILED
@@ -255,7 +260,8 @@ def scrape_new_kits(self, job_id: int):
             session.commit()
         raise
     finally:
-        session.close()
+        if session is not None:
+            session.close()
 
 
 @celery_app.task(bind=True, name="gunpladb.scrape_manual")
@@ -264,8 +270,9 @@ def scrape_manual_task(self, job_id: int, kit_id: int, bandai_manual_id: int):
     from app.scrapers.bandai_manual import scrape_manual
     from app.storage import upload_bytes
 
-    session = _get_sync_session()
+    session = None
     try:
+        session = _get_sync_session()
         job = session.get(ScrapeJob, job_id)
         job.status = ScrapeJobStatus.RUNNING
         job.started_at = datetime.now(timezone.utc)
@@ -307,6 +314,8 @@ def scrape_manual_task(self, job_id: int, kit_id: int, bandai_manual_id: int):
 
     except Exception as e:
         logger.error(f"Manual job {job_id} failed: {e}")
+        if session is None:
+            session = _get_sync_session()
         job = session.get(ScrapeJob, job_id)
         if job:
             job.status = ScrapeJobStatus.FAILED
@@ -315,4 +324,5 @@ def scrape_manual_task(self, job_id: int, kit_id: int, bandai_manual_id: int):
             session.commit()
         raise
     finally:
-        session.close()
+        if session is not None:
+            session.close()
