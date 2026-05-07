@@ -34,4 +34,8 @@ export const scrapeApi = {
     api.post(`/scrape/manual/${kitId}?bandai_manual_id=${bandaiManualId}`).then(r => r.data),
   listJobs: (limit = 20) => api.get('/scrape/jobs', { params: { limit } }).then(r => r.data),
   getJob: (id) => api.get(`/scrape/jobs/${id}`).then(r => r.data),
+  cancelJob: (id) => api.post(`/scrape/jobs/${id}/cancel`).then(r => r.data),
+  pauseJob: (id) => api.post(`/scrape/jobs/${id}/pause`).then(r => r.data),
+  resumeJob: (id) => api.post(`/scrape/jobs/${id}/resume`).then(r => r.data),
+  deleteJob: (id) => api.delete(`/scrape/jobs/${id}`),
 }

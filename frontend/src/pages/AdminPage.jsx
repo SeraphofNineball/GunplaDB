@@ -1,17 +1,36 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import { Play, RefreshCw, Clock, CheckCircle, XCircle, Loader, Plus, BookOpen } from 'lucide-react'
+import {
+  Play, RefreshCw, Clock, CheckCircle, XCircle, Loader,
+  Plus, BookOpen, Pause, PauseCircle, Ban, Square, Trash2, RotateCcw,
+} from 'lucide-react'
 import { scrapeApi } from '../api/client'
 
 const STATUS_ICON = {
-  pending: <Clock size={14} className="text-yellow-400" />,
-  running: <Loader size={14} className="text-blue-400 animate-spin" />,
+  pending:   <Clock size={14} className="text-yellow-400" />,
+  running:   <Loader size={14} className="text-blue-400 animate-spin" />,
+  paused:    <PauseCircle size={14} className="text-orange-400" />,
   completed: <CheckCircle size={14} className="text-green-400" />,
-  failed: <XCircle size={14} className="text-red-400" />,
+  failed:    <XCircle size={14} className="text-red-400" />,
+  cancelled: <Ban size={14} className="text-gray-500" />,
 }
 
-function JobRow({ job }) {
+function ActionBtn({ title, onClick, disabled, icon, color = 'text-gray-300' }) {
+  return (
+    <button
+      title={title}
+      onClick={onClick}
+      disabled={disabled}
+      className={`p-1 rounded hover:bg-white/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${color}`}
+    >
+      {icon}
+    </button>
+  )
+}
+
+function JobRow({ job, pendingAction, onCancel, onPause, onResume, onDelete }) {
+  const busy = !!pendingAction
   const duration = job.completed_at && job.started_at
     ? Math.round((new Date(job.completed_at) - new Date(job.started_at)) / 1000)
     : null
@@ -20,7 +39,7 @@ function JobRow({ job }) {
     <tr className="border-t border-gundam-border text-sm">
       <td className="py-3 pr-4">
         <span className="flex items-center gap-2">
-          {STATUS_ICON[job.status] || null}
+          {STATUS_ICON[job.status] ?? null}
           <span className="capitalize">{job.status}</span>
         </span>
       </td>
@@ -32,14 +51,32 @@ function JobRow({ job }) {
       <td className="py-3 pr-4 text-gray-400 text-xs">
         {duration != null ? `${duration}s` : '—'}
       </td>
-      <td className="py-3 text-gray-500 text-xs">
+      <td className="py-3 pr-4 text-gray-500 text-xs">
         {new Date(job.created_at).toLocaleString()}
       </td>
-      {job.error_message && (
-        <td className="py-3 text-red-400 text-xs max-w-xs truncate" title={job.error_message}>
-          {job.error_message}
-        </td>
-      )}
+      <td className="py-3 pr-4 text-red-400 text-xs max-w-xs truncate" title={job.error_message ?? ''}>
+        {job.error_message ?? ''}
+      </td>
+      <td className="py-3">
+        <div className="flex items-center gap-0.5">
+          {job.status === 'running' && (
+            <ActionBtn title="Pause" onClick={onPause} disabled={busy} color="text-orange-400" icon={<Pause size={13} />} />
+          )}
+          {job.status === 'paused' && (
+            <ActionBtn title="Resume" onClick={onResume} disabled={busy} color="text-green-400" icon={<Play size={13} />} />
+          )}
+          {(job.status === 'failed' || job.status === 'cancelled') && job.job_type !== 'fetch_manual' && (
+            <ActionBtn title="Retry" onClick={onResume} disabled={busy} color="text-blue-400" icon={<RotateCcw size={13} />} />
+          )}
+          {['pending', 'running', 'paused'].includes(job.status) && (
+            <ActionBtn title="Cancel" onClick={onCancel} disabled={busy} color="text-red-400" icon={<Square size={13} />} />
+          )}
+          {['completed', 'failed', 'cancelled'].includes(job.status) && (
+            <ActionBtn title="Delete" onClick={onDelete} disabled={busy} color="text-gray-500" icon={<Trash2 size={13} />} />
+          )}
+          {pendingAction && <Loader size={12} className="animate-spin text-gray-400 ml-1" />}
+        </div>
+      </td>
     </tr>
   )
 }
@@ -49,6 +86,7 @@ export default function AdminPage() {
   const [maxKits, setMaxKits] = useState('')
   const [bandaiId, setBandaiId] = useState('')
   const [kitId, setKitId] = useState('')
+  const [pendingAction, setPendingAction] = useState(null) // { id, type }
 
   const { data: jobs, isLoading } = useQuery({
     queryKey: ['scrape-jobs'],
@@ -56,22 +94,40 @@ export default function AdminPage() {
     refetchInterval: 5000,
   })
 
+  const invalidate = () => qc.invalidateQueries(['scrape-jobs'])
+  const trackAction = (id, type) => setPendingAction({ id, type })
+  const clearAction = () => { setPendingAction(null); invalidate() }
+
   const startFull = useMutation({
     mutationFn: () => scrapeApi.startFull(maxKits ? parseInt(maxKits) : undefined),
-    onSuccess: () => qc.invalidateQueries(['scrape-jobs']),
+    onSuccess: invalidate,
   })
-
   const startUpdate = useMutation({
     mutationFn: scrapeApi.startUpdate,
-    onSuccess: () => qc.invalidateQueries(['scrape-jobs']),
+    onSuccess: invalidate,
   })
-
   const fetchManual = useMutation({
     mutationFn: () => scrapeApi.fetchManual(parseInt(kitId), parseInt(bandaiId)),
-    onSuccess: () => { qc.invalidateQueries(['scrape-jobs']); setBandaiId(''); setKitId('') },
+    onSuccess: () => { invalidate(); setBandaiId(''); setKitId('') },
+  })
+  const cancelJob = useMutation({
+    mutationFn: (id) => { trackAction(id, 'cancel'); return scrapeApi.cancelJob(id) },
+    onSettled: clearAction,
+  })
+  const pauseJob = useMutation({
+    mutationFn: (id) => { trackAction(id, 'pause'); return scrapeApi.pauseJob(id) },
+    onSettled: clearAction,
+  })
+  const resumeJob = useMutation({
+    mutationFn: (id) => { trackAction(id, 'resume'); return scrapeApi.resumeJob(id) },
+    onSettled: clearAction,
+  })
+  const deleteJob = useMutation({
+    mutationFn: (id) => { trackAction(id, 'delete'); return scrapeApi.deleteJob(id) },
+    onSettled: clearAction,
   })
 
-  const runningJobs = jobs?.filter(j => j.status === 'running').length || 0
+  const activeJobs = jobs?.filter(j => ['pending', 'running', 'paused'].includes(j.status)).length ?? 0
 
   return (
     <div className="max-w-5xl mx-auto px-4 py-6">
@@ -87,7 +143,6 @@ export default function AdminPage() {
 
       {/* Scrape actions */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
-        {/* Full scrape */}
         <div className="bg-gundam-card border border-gundam-border rounded-xl p-5">
           <h2 className="font-semibold mb-1 flex items-center gap-2"><Play size={16} className="text-gundam-red" /> Full Scrape</h2>
           <p className="text-xs text-gray-400 mb-4">Scrape all Gunpla kits from GunplaCentral (takes a long time).</p>
@@ -100,27 +155,25 @@ export default function AdminPage() {
           />
           <button
             onClick={() => startFull.mutate()}
-            disabled={startFull.isPending || runningJobs > 0}
+            disabled={startFull.isPending || activeJobs > 0}
             className="w-full py-2 bg-gundam-red hover:bg-red-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50"
           >
             {startFull.isPending ? 'Starting…' : 'Start Full Scrape'}
           </button>
         </div>
 
-        {/* Update scrape */}
         <div className="bg-gundam-card border border-gundam-border rounded-xl p-5">
           <h2 className="font-semibold mb-1 flex items-center gap-2"><RefreshCw size={16} className="text-blue-400" /> Update</h2>
           <p className="text-xs text-gray-400 mb-4">Fetch only kits added since the last scrape.</p>
           <button
             onClick={() => startUpdate.mutate()}
-            disabled={startUpdate.isPending || runningJobs > 0}
+            disabled={startUpdate.isPending || activeJobs > 0}
             className="w-full py-2 bg-blue-700 hover:bg-blue-600 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 mt-auto"
           >
             {startUpdate.isPending ? 'Starting…' : 'Check for New Kits'}
           </button>
         </div>
 
-        {/* Fetch manual */}
         <div className="bg-gundam-card border border-gundam-border rounded-xl p-5">
           <h2 className="font-semibold mb-1 flex items-center gap-2"><BookOpen size={16} className="text-green-400" /> Fetch Manual</h2>
           <p className="text-xs text-gray-400 mb-3">Pull a manual from Bandai Hobby by ID.</p>
@@ -152,9 +205,9 @@ export default function AdminPage() {
       <div className="bg-gundam-card border border-gundam-border rounded-xl p-5">
         <div className="flex items-center justify-between mb-4">
           <h2 className="font-semibold">Job Log</h2>
-          {runningJobs > 0 && (
+          {activeJobs > 0 && (
             <span className="text-xs text-blue-400 flex items-center gap-1">
-              <Loader size={12} className="animate-spin" /> {runningJobs} running
+              <Loader size={12} className="animate-spin" /> {activeJobs} active
             </span>
           )}
         </div>
@@ -172,11 +225,23 @@ export default function AdminPage() {
                   <th className="text-left pb-2 pr-4">Type</th>
                   <th className="text-left pb-2 pr-4">Progress</th>
                   <th className="text-left pb-2 pr-4">Duration</th>
-                  <th className="text-left pb-2">Started</th>
+                  <th className="text-left pb-2 pr-4">Started</th>
+                  <th className="text-left pb-2 pr-4">Error</th>
+                  <th className="text-left pb-2">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {jobs.map(job => <JobRow key={job.id} job={job} />)}
+                {jobs.map(job => (
+                  <JobRow
+                    key={job.id}
+                    job={job}
+                    pendingAction={pendingAction?.id === job.id ? pendingAction.type : null}
+                    onCancel={() => cancelJob.mutate(job.id)}
+                    onPause={() => pauseJob.mutate(job.id)}
+                    onResume={() => resumeJob.mutate(job.id)}
+                    onDelete={() => deleteJob.mutate(job.id)}
+                  />
+                ))}
               </tbody>
             </table>
           </div>

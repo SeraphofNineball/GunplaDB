@@ -1,3 +1,4 @@
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
 
@@ -19,3 +20,7 @@ async def get_db() -> AsyncSession:
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        for value in ("paused", "cancelled"):
+            await conn.execute(
+                text(f"ALTER TYPE scrapejobstatus ADD VALUE IF NOT EXISTS '{value}'")
+            )

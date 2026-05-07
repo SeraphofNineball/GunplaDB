@@ -39,8 +39,10 @@ class GradeEnum(str, enum.Enum):
 class ScrapeJobStatus(str, enum.Enum):
     PENDING = "pending"
     RUNNING = "running"
+    PAUSED = "paused"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class Kit(Base):

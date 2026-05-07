@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -94,3 +95,89 @@ async def get_job(job_id: int, db: AsyncSession = Depends(get_db)):
     if not job:
         raise HTTPException(404, "Job not found")
     return ScrapeJobOut.model_validate(job)
+
+
+@router.post("/jobs/{job_id}/cancel", response_model=ScrapeJobOut)
+async def cancel_job(job_id: int, db: AsyncSession = Depends(get_db)):
+    job = (await db.execute(select(ScrapeJob).where(ScrapeJob.id == job_id))).scalar_one_or_none()
+    if not job:
+        raise HTTPException(404, "Job not found")
+    if job.status not in (ScrapeJobStatus.PENDING, ScrapeJobStatus.RUNNING, ScrapeJobStatus.PAUSED):
+        raise HTTPException(400, f"Cannot cancel a job with status '{job.status}'")
+
+    if job.celery_task_id:
+        from app.tasks import celery_app
+        celery_app.control.revoke(job.celery_task_id, terminate=True, signal="SIGTERM")
+
+    job.status = ScrapeJobStatus.CANCELLED
+    job.completed_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(job)
+    return ScrapeJobOut.model_validate(job)
+
+
+@router.post("/jobs/{job_id}/pause", response_model=ScrapeJobOut)
+async def pause_job(job_id: int, db: AsyncSession = Depends(get_db)):
+    job = (await db.execute(select(ScrapeJob).where(ScrapeJob.id == job_id))).scalar_one_or_none()
+    if not job:
+        raise HTTPException(404, "Job not found")
+    if job.status != ScrapeJobStatus.RUNNING:
+        raise HTTPException(400, f"Can only pause a running job (current status: '{job.status}')")
+
+    job.status = ScrapeJobStatus.PAUSED
+    await db.commit()
+    await db.refresh(job)
+    return ScrapeJobOut.model_validate(job)
+
+
+@router.post("/jobs/{job_id}/resume", response_model=ScrapeJobOut)
+async def resume_job(job_id: int, db: AsyncSession = Depends(get_db)):
+    job = (await db.execute(select(ScrapeJob).where(ScrapeJob.id == job_id))).scalar_one_or_none()
+    if not job:
+        raise HTTPException(404, "Job not found")
+
+    if job.status == ScrapeJobStatus.PAUSED:
+        job.status = ScrapeJobStatus.RUNNING
+        await db.commit()
+        await db.refresh(job)
+        return ScrapeJobOut.model_validate(job)
+
+    if job.status in (ScrapeJobStatus.FAILED, ScrapeJobStatus.CANCELLED):
+        if job.job_type == "fetch_manual":
+            raise HTTPException(400, "Cannot retry a fetch_manual job — parameters are not stored")
+
+        from app.tasks import scrape_all_kits, scrape_new_kits
+
+        job.status = ScrapeJobStatus.PENDING
+        job.items_found = 0
+        job.items_processed = 0
+        job.items_failed = 0
+        job.error_message = None
+        job.started_at = None
+        job.completed_at = None
+        await db.commit()
+        await db.refresh(job)
+
+        if job.job_type == "full_scrape":
+            task = scrape_all_kits.delay(job.id)
+        else:
+            task = scrape_new_kits.delay(job.id)
+
+        job.celery_task_id = task.id
+        await db.commit()
+        await db.refresh(job)
+        return ScrapeJobOut.model_validate(job)
+
+    raise HTTPException(400, f"Cannot resume a job with status '{job.status}'")
+
+
+@router.delete("/jobs/{job_id}", status_code=204)
+async def delete_job(job_id: int, db: AsyncSession = Depends(get_db)):
+    job = (await db.execute(select(ScrapeJob).where(ScrapeJob.id == job_id))).scalar_one_or_none()
+    if not job:
+        raise HTTPException(404, "Job not found")
+    if job.status in (ScrapeJobStatus.PENDING, ScrapeJobStatus.RUNNING, ScrapeJobStatus.PAUSED):
+        raise HTTPException(400, "Cannot delete an active job — cancel it first")
+
+    await db.delete(job)
+    await db.commit()

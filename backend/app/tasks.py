@@ -1,6 +1,7 @@
 """Celery tasks for background scraping jobs."""
 import asyncio
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -21,6 +22,27 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     task_acks_late=True,
 )
+
+
+def _wait_if_paused(session, job_id):
+    """Block until the job is unpaused; raise if it is cancelled."""
+    from app.models import ScrapeJob, ScrapeJobStatus
+    session.expire_all()
+    job = session.get(ScrapeJob, job_id)
+    if job is None or job.status == ScrapeJobStatus.CANCELLED:
+        raise RuntimeError(f"Job {job_id} was cancelled")
+    if job.status != ScrapeJobStatus.PAUSED:
+        return
+    logger.info(f"Job {job_id} paused, waiting for resume…")
+    while True:
+        time.sleep(2)
+        session.expire_all()
+        job = session.get(ScrapeJob, job_id)
+        if job is None or job.status == ScrapeJobStatus.CANCELLED:
+            raise RuntimeError(f"Job {job_id} was cancelled")
+        if job.status != ScrapeJobStatus.PAUSED:
+            logger.info(f"Job {job_id} resumed")
+            return
 
 
 def _get_sync_session():
@@ -59,6 +81,8 @@ def scrape_all_kits(self, job_id: int, max_kits: Optional[int] = None):
         job.items_found = len(kit_ids)
         session.commit()
 
+        _wait_if_paused(session, job_id)
+
         logger.info(f"Found {len(kit_ids)} kit IDs, scraping details...")
 
         def progress(done, total, kit):
@@ -67,10 +91,14 @@ def scrape_all_kits(self, job_id: int, max_kits: Optional[int] = None):
 
         kits = asyncio.run(scrape_kits(kit_ids, progress_callback=progress))
 
+        _wait_if_paused(session, job_id)
+
         # Save to DB
         saved = 0
         failed = 0
-        for scraped in kits:
+        for i, scraped in enumerate(kits):
+            if i % 20 == 0:
+                _wait_if_paused(session, job_id)
             try:
                 existing = session.execute(
                     select(Kit).where(Kit.external_id == scraped.external_id)
@@ -147,7 +175,7 @@ def scrape_all_kits(self, job_id: int, max_kits: Optional[int] = None):
         if session is None:
             session = _get_sync_session()
         job = session.get(ScrapeJob, job_id)
-        if job:
+        if job and job.status != ScrapeJobStatus.CANCELLED:
             job.status = ScrapeJobStatus.FAILED
             job.error_message = str(e)
             job.completed_at = datetime.now(timezone.utc)
@@ -193,11 +221,17 @@ def scrape_new_kits(self, job_id: int):
         job.items_found = len(new_ids)
         session.commit()
 
+        _wait_if_paused(session, job_id)
+
         kits = asyncio.run(scrape_kits(new_ids))
+
+        _wait_if_paused(session, job_id)
 
         saved = 0
         failed = 0
-        for scraped in kits:
+        for i, scraped in enumerate(kits):
+            if i % 20 == 0:
+                _wait_if_paused(session, job_id)
             try:
                 kit_db = Kit(
                     external_id=scraped.external_id,
@@ -253,7 +287,7 @@ def scrape_new_kits(self, job_id: int):
         if session is None:
             session = _get_sync_session()
         job = session.get(ScrapeJob, job_id)
-        if job:
+        if job and job.status != ScrapeJobStatus.CANCELLED:
             job.status = ScrapeJobStatus.FAILED
             job.error_message = str(e)
             job.completed_at = datetime.now(timezone.utc)
